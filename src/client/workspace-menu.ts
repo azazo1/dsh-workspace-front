@@ -220,7 +220,9 @@ export function installWorkspaceMenu(options: WorkspaceMenuOptions): () => void 
       closeMenu()
     })
     row.setAttribute(MOUNT_ATTR, '')
-    viewport.append(row)
+    const first = viewport.firstElementChild
+    if (first === null) viewport.append(row)
+    else viewport.insertBefore(row, first)
   }
 
   const observer = new MutationObserver(() => {
