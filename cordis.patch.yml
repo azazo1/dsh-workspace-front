@@ -1,0 +1,6 @@
+# dsh-workspace-front bundle patch
+#
+# 把插件行插进 profile. Host 半区只做装配记录, 提到最前的菜单项在 Client 半区.
+- insert:
+    - id: dsh-workspace-front
+      name: dsh-workspace-front
