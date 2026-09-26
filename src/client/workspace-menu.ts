@@ -11,7 +11,10 @@ import { frontAnchor } from '../placement.ts'
 export interface WorkspaceMenuItem {
   /** 宿主登记的 Workspace id. */
   readonly workspaceId: string
-  /** 行上显示的标题, 也写进三个点按钮的 aria-label. */
+  /**
+   * 登记里的标题. 自动命名的 Workspace 在行上显示的是本地化的默认名,
+   * 所以它只用来核对 Workspace 身份, 不能拿来对按钮文案.
+   */
   readonly title: string
 }
 
@@ -69,6 +72,36 @@ const MOUNT_ATTR = 'data-dsh-workspace-front'
 const ROW_KEY_PREFIX = 'workspace:'
 
 /**
+ * 取模板时冒充 Workspace 名字的哨兵, 只在本文件里用, 不会被渲染出来.
+ */
+const NAME_SENTINEL = '\u0001'
+
+/**
+ * 被点的按钮是不是这一行的 Workspace 动作触发器.
+ *
+ * 宿主渲染行标题时会换掉自动命名的那个标题: 登记里是 `default-workspace` 的
+ * Workspace 显示成本地化的默认名, 所以拿登记里的 title 去拼 aria 会漏掉它.
+ * 这里只比名字之外的两段固定文字, 名字由宿主怎么写都不影响.
+ * @param button - 行内的按钮.
+ * @param workspaceT - 宿主文案.
+ * @returns 是 Workspace 动作触发器时为 true.
+ */
+export function isActionsTrigger(
+  button: HTMLButtonElement,
+  workspaceT: WorkspaceMenuOptions['workspaceT'],
+): boolean {
+  const template = workspaceT('actions.workspace.aria', { name: NAME_SENTINEL })
+  const at = template.indexOf(NAME_SENTINEL)
+  // 模板里没有 {name} 就无从区分触发器, 当作不是.
+  if (at < 0) return false
+  const prefix = template.slice(0, at)
+  const suffix = template.slice(at + NAME_SENTINEL.length)
+  const aria = button.getAttribute('aria-label') ?? ''
+  return aria.length > prefix.length + suffix.length
+    && aria.startsWith(prefix) && aria.endsWith(suffix)
+}
+
+/**
  * 从三个点按钮所在的 Workspace 行读出 workspace id.
  * @param button - 行内的按钮.
  * @returns workspace id, 或按钮不在 Workspace 行上.
@@ -96,8 +129,7 @@ function workspaceForButton(
   if (workspaceId === undefined) return undefined
   const item = items.find(candidate => candidate.workspaceId === workspaceId)
   if (item === undefined) return undefined
-  const aria = workspaceT('actions.workspace.aria', { name: item.title })
-  return button.getAttribute('aria-label') === aria ? item : undefined
+  return isActionsTrigger(button, workspaceT) ? item : undefined
 }
 
 /**
@@ -153,16 +185,18 @@ function chevronUp(): SVGSVGElement {
  * 用抄来的 class 做一颗菜单行, 几何和重命名, 删除工作区相同.
  * @param sample - 内建行的 class.
  * @param label - 本插件文案.
+ * @param disabled - 该 Workspace 已经排在最前时置灰, 跟内建行的禁用样式一致.
  * @param onSelect - 点击后移动并关闭菜单.
  * @returns 可插进菜单的行.
  */
-function createRow(sample: RowSample, label: string, onSelect: () => void): HTMLDivElement {
+function createRow(sample: RowSample, label: string, disabled: boolean, onSelect: () => void): HTMLDivElement {
   const wrap = document.createElement('div')
   wrap.className = sample.wrapClass
   const button = document.createElement('button')
   button.type = 'button'
   button.setAttribute('role', 'menuitem')
   button.className = sample.buttonClass
+  button.disabled = disabled
   const icon = document.createElement('span')
   icon.className = sample.iconClass
   icon.append(chevronUp())
@@ -170,10 +204,12 @@ function createRow(sample: RowSample, label: string, onSelect: () => void): HTML
   text.className = sample.labelClass
   text.textContent = label
   button.append(icon, text)
-  button.addEventListener('click', (event) => {
-    event.stopPropagation()
-    onSelect()
-  })
+  if (!disabled) {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation()
+      onSelect()
+    })
+  }
   wrap.append(button)
   return wrap
 }
@@ -185,48 +221,56 @@ function closeMenu(): void {
 
 /**
  * 监听 Workspace 三个点, 在菜单打开后补上一行.
- * 已经排在最前的 Workspace 不补这一行.
+ * 行一直在, 只是该 Workspace 已经排在最前时置灰.
  * @param options - 列表, 文案和移动回调.
  * @returns 卸下监听的函数.
  */
 export function installWorkspaceMenu(options: WorkspaceMenuOptions): () => void {
   let pendingId: string | undefined
   let mountedMenu: HTMLElement | undefined
+  let mountedRow: HTMLElement | undefined
+  let warned = false
 
   const clearMounted = (): void => {
     mountedMenu = undefined
+    mountedRow = undefined
     pendingId = undefined
   }
 
   const mountIntoOpenMenu = (): void => {
-    if (pendingId === undefined || mountedMenu !== undefined) return
+    if (pendingId === undefined || mountedRow?.isConnected === true) return
     const workspaceId = pendingId
     const anchor = frontAnchor(options.workspaces.getSnapshot().items, workspaceId)
     const menus = [...document.querySelectorAll<HTMLElement>('[role="menu"]')]
       .filter(menu => isWorkspaceMenu(menu, options.workspaceT))
     const menu = menus.at(-1)
-    if (menu === undefined || menu.hasAttribute(MOUNT_ATTR)) return
-    menu.setAttribute(MOUNT_ATTR, '')
+    if (menu === undefined) return
     mountedMenu = menu
-    if (anchor === null) return
+    mountedRow = undefined
     const sample = sampleRow(menu)
     if (sample === undefined) {
-      options.warn('dsh-workspace-front: 宿主菜单行结构变了, 无法沿用重命名和删除工作区的样式')
+      if (!warned) {
+        warned = true
+        options.warn('dsh-workspace-front: 宿主菜单行结构变了, 无法沿用重命名和删除工作区的样式')
+      }
       return
     }
     const viewport = menu.querySelector<HTMLElement>(':scope > [role="presentation"]') ?? menu
-    const row = createRow(sample, options.rowT('moveToFront'), () => {
+    // 这一项每次都在: 已经排在最前时只是无事可做, 置灰比整行消失好找.
+    const row = createRow(sample, options.rowT('moveToFront'), anchor === null, () => {
+      if (anchor === null) return
       options.moveToFront(workspaceId, anchor)
       closeMenu()
     })
     row.setAttribute(MOUNT_ATTR, '')
-    const first = viewport.firstElementChild
-    if (first === null) viewport.append(row)
-    else viewport.insertBefore(row, first)
+    // 追加在 React 自己的行后面: 这些位置由 React 自己管理, 插在它前面会被下一次渲染抹掉.
+    viewport.append(row)
+    mountedRow = row
   }
 
   const observer = new MutationObserver(() => {
     if (mountedMenu !== undefined && !mountedMenu.isConnected) clearMounted()
+    else if (mountedRow !== undefined && !mountedRow.isConnected) mountedRow = undefined
     mountIntoOpenMenu()
   })
   observer.observe(document.body, { childList: true, subtree: true })

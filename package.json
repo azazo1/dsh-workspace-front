@@ -40,7 +40,7 @@
     "build:host": "tsdown --config tsdown.host.config.ts",
     "build:client": "tsdown --config tsdown.client.config.ts",
     "build": "pnpm run build:host && pnpm run build:client",
-    "test": "node --test tests/placement.test.ts",
+    "test": "node --test tests/*.test.ts",
     "check:client": "node scripts/check-client.mjs",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run check:client"
   },
